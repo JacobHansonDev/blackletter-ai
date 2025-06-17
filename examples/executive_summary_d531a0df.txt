@@ -1,0 +1,53 @@
+I've extracted the critical information from each section. Here are the key points:
+
+**Section 1**
+
+* **Key Parties and their Roles:** None
+* **Important Dates and Deadlines:** None
+* **Financial Terms and Amounts:** None
+* **Primary Obligations and Requirements:** None
+* **Critical Legal Provisions:** None
+
+**Section 2**
+
+* **Key Parties and their Roles:**
+	+ Taxpayers (individuals receiving EITC benefits)
+	+ The Secretary of the Treasury (responsible for issuing regulations or other guidance)
+* **Important Dates and Deadlines:**
+	+ December 31, 2024 (effective date for certain amendments)
+	+ Enactment of this Act (trigger for various provisions)
+* **Financial Terms and Amounts:** None
+* **Primary Obligations and Requirements:**
+	+ Taxpayers must apply for an EITC certificate under the program with respect to a child.
+	+ The Secretary shall not issue an EITC certificate if more than one taxpayer makes a claim for credit taking into account the same child.
+* **Critical Legal Provisions:**
+	+ Subsection (c) provides that the Secretary shall not credit the portion of any overpayment for a taxable year attributable to a taxpayer taking into account a child as a qualifying child unless an EITC certificate is obtained.
+
+**Section 3**
+
+* **Key Parties and their Roles:** None
+* **Important Dates and Deadlines:**
+	+ Enactment of this Act (trigger for various provisions)
+* **Financial Terms and Amounts:** $10,000,000 appropriation for task force to design private data bouncing system
+* **Primary Obligations and Requirements:** None
+* **Critical Legal Provisions:** Section 7531 (Earned income tax credit certification program)
+
+**Section 4**
+
+* **Key Parties and their Roles:**
+	+ Department of the Treasury (responsible for delivering a report on the cost of a new public-private partnership)
+	+ Congress (to receive a report from the Department of the Treasury within 90 days)
+* **Important Dates and Deadlines:** Within 90 days following the date of enactment of this Act (report to be delivered by the Department of the Treasury)
+* **Financial Terms and Amounts:** $15,000,000 to remain available until September 30, 2026, for costs to build and administer each release
+* **Primary Obligations and Requirements:**
+	+ The Department of the Treasury must deliver a report on the cost of a new public-private partnership.
+	+ The Secretary of the Treasury may not regulate, prohibit, or restrict the use of contingent fees in connection with tax returns.
+* **Critical Legal Provisions:** Section 112208 (Increases penalties for unauthorized disclosures of taxpayer information to $250,000 or imprisonment of up to 10 years)
+
+**Section 5**
+
+* **Key Parties and their Roles:** None
+* **Important Dates and Deadlines:** Enactment of this Act (trigger for various provisions)
+* **Financial Terms and Amounts:** None
+* **Primary Obligations and Requirements:** None
+* **Critical Legal Provisions:** Section 113001 (Modifies the limitation on public debt by increasing it by $4,000,000,000,000)
