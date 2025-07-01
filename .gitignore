@@ -1,0 +1,22 @@
+# Sensitive files
+*.pem
+*.key
+config.json
+.env
+nohup.out
+# Temporary and cache files
+*.tmp
+*.log
+__pycache__/
+*.pyc
+.DS_Store
+*.save
+
+# Large output files (keep the important ones, exclude massive outputs)
+output_*.txt
+executive_summary_*.txt
+qa_ready_*.txt
+
+# Archive directories
+archive/
+archive_old_system_*/
