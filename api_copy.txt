@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """
-Blackletter AI API - OPTIMIZED Production Version 6.0
+Blackletter AI API - Multi-Document Production Version
 ✅ User registration & login system
 ✅ Enhanced rate limiting with IP protection
 ✅ User authentication with API keys
 ✅ User document isolation
 ✅ Comprehensive error handling
-✅ 500MB file validation and size limits
+✅ File validation and size limits
 ✅ Processing timeouts
 ✅ DynamoDB integration with proper Decimal handling
 ✅ REAL Q&A System with Smart Chunking + Semantic Search
 ✅ MULTI-DOCUMENT Upload and Cross-Document Q&A
-✅ REDIS CACHING for instant responses
-✅ SMART CONTENT EXTRACTION (skip image bloat)
-✅ OPTIMIZED OLLAMA parameters for speed
-✅ IMPROVED CHUNK SELECTION with diversity
-✅ UPLOAD ANALYSIS with file composition feedback
-✅ SMART AUTO-SHUTDOWN monitoring
 ✅ Production deployment ready
 """
 
@@ -46,37 +40,15 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import requests
 
-# Try to import Redis and other optimizations (graceful degradation)
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    logger.warning("Redis not available - caching disabled")
-
-try:
-    import fitz  # PyMuPDF for smart content extraction
-    SMART_EXTRACTION_AVAILABLE = True
-except ImportError:
-    SMART_EXTRACTION_AVAILABLE = False
-    logger.warning("PyMuPDF not available - smart extraction disabled")
-
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-    logger.warning("psutil not available - auto-shutdown disabled")
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI with enhanced metadata
 app = FastAPI(
-    title="Blackletter AI API - OPTIMIZED",
-    description="Professional multi-document Q&A system with performance optimizations",
-    version="6.0.0",
+    title="Blackletter AI API",
+    description="Professional multi-document Q&A system with user authentication and enterprise features",
+    version="5.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -84,31 +56,20 @@ app = FastAPI(
 # Enhanced CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins for now
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"]
 )
 
-# Configuration constants - OPTIMIZED
+# Configuration constants
 BUCKET_NAME = 'blackletter-files-prod'
 DYNAMODB_TABLE = 'blackletter-jobs'
 USERS_TABLE = 'blackletter-users'
-MAX_FILE_SIZE_MB = 500  # ✅ INCREASED FROM 100MB TO 500MB
+MAX_FILE_SIZE_MB = 100
 MAX_PROCESSING_TIME_MINUTES = 30
 MAX_FILES_PER_UPLOAD = 10
-
-# Initialize Redis for caching (if available)
-redis_client = None
-if REDIS_AVAILABLE:
-    try:
-        redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        redis_client.ping()
-        logger.info("✅ Redis cache connected successfully")
-    except Exception as e:
-        logger.warning(f"⚠️ Redis not available: {e}")
-        redis_client = None
 
 # Q&A System
 qa_model = None
@@ -138,33 +99,10 @@ IP_LIMITS = {
     "requests_per_minute": 100,
     "requests_per_second": 15,
     "burst_threshold": 30,
-    "block_duration": 300
+    "block_duration": 300  # 5 minutes
 }
 
-# Smart Auto-Shutdown Configuration
-AUTO_SHUTDOWN_CONFIG = {
-    "idle_threshold_minutes": 30,
-    "check_interval_minutes": 5,
-    "enabled": False,
-    "last_activity": time.time()
-}
-
-# Optimized Ollama Parameters
-OLLAMA_CONFIG = {
-    "model": "llama3.1:8b",
-    "options": {
-        "num_ctx": 4096,
-        "num_predict": 512,
-        "temperature": 0.1,
-        "top_p": 0.9,
-        "repeat_penalty": 1.1,
-        "num_thread": 8,
-        "num_gpu": 0
-    },
-    "timeout": 60
-}
-
-# Pydantic models
+# Pydantic models for request/response validation
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
@@ -192,7 +130,7 @@ class UserProfile(BaseModel):
 
 class QuestionRequest(BaseModel):
     question: str
-    document_id: Optional[str] = None
+    document_id: Optional[str] = None  # Now optional for multi-doc search
 
 class QuestionResponse(BaseModel):
     answer: str
@@ -200,7 +138,6 @@ class QuestionResponse(BaseModel):
     processing_time: float
     documents_searched: int
     user_id: str
-    cached: Optional[bool] = False
 
 class DocumentStatus(BaseModel):
     job_id: str
@@ -229,129 +166,34 @@ class MultiUploadResponse(BaseModel):
     total_files: int
     user_id: str
 
-# Initialize AWS clients
+# Initialize AWS clients with error handling
 def init_aws_clients():
     """Initialize AWS clients with proper error handling"""
     try:
         s3_client = boto3.client('s3', region_name='us-east-1')
         dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
         
+        # Test connections with correct methods
         s3_client.head_bucket(Bucket=BUCKET_NAME)
         
+        # Test DynamoDB tables exist
         jobs_table = dynamodb.Table(DYNAMODB_TABLE)
         users_table = dynamodb.Table(USERS_TABLE)
-        projects_table = dynamodb.Table('blackletter-projects')  # ADD THIS LINE
         
+        # Use table.load() to verify table exists
         jobs_table.load()
         users_table.load()
-        projects_table.load()  # ADD THIS LINE TOO
         
         logger.info("✅ AWS clients initialized successfully")
-        return s3_client, dynamodb, projects_table
+        return s3_client, dynamodb
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize AWS clients: {e}")
         raise
 
-s3_client, dynamodb, projects_table = init_aws_clients()
+s3_client, dynamodb = init_aws_clients()
 
-# Add these lines to make tables globally accessible
-jobs_table = dynamodb.Table(DYNAMODB_TABLE)
-users_table = dynamodb.Table(USERS_TABLE)
-
-# ✅ REDIS CACHING SYSTEM
-def cache_key_for_question(question: str, user_id: str) -> str:
-    """Generate cache key for question + user"""
-    import hashlib
-    content = f"{question}:{user_id}"
-    return hashlib.md5(content.encode()).hexdigest()
-
-async def get_cached_answer(question: str, user_id: str) -> dict:
-    """Check if we have a cached answer"""
-    if not redis_client:
-        return None
-        
-    try:
-        cache_key = cache_key_for_question(question, user_id)
-        cached = redis_client.get(cache_key)
-        if cached:
-            logger.info(f"✅ Cache HIT for question: {question[:50]}...")
-            return json.loads(cached)
-    except Exception as e:
-        logger.warning(f"Cache retrieval error: {e}")
-    
-    return None
-
-async def cache_answer(question: str, user_id: str, answer: dict, ttl_hours: int = 24):
-    """Cache the answer"""
-    if not redis_client:
-        return
-        
-    try:
-        cache_key = cache_key_for_question(question, user_id)
-        redis_client.setex(
-            cache_key, 
-            ttl_hours * 3600,
-            json.dumps(answer)
-        )
-        logger.info(f"✅ Answer cached for 24 hours")
-    except Exception as e:
-        logger.warning(f"Cache storage error: {e}")
-
-# ✅ SMART AUTO-SHUTDOWN MONITORING
-def update_activity_timestamp():
-    """Update last activity timestamp"""
-    AUTO_SHUTDOWN_CONFIG["last_activity"] = time.time()
-
-def check_system_activity():
-    """Check if system should stay active"""
-    if not PSUTIL_AVAILABLE:
-        return True
-        
-    try:
-        import psutil
-        
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            if 'uvicorn' in proc.info.get('name', '') or any('api:app' in str(cmd) for cmd in proc.info.get('cmdline', [])):
-                return True
-        
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory_percent = psutil.virtual_memory().percent
-        
-        if cpu_percent > 20 or memory_percent > 80:
-            return True
-            
-        try:
-            response = requests.get('http://localhost:11434/api/ps', timeout=5)
-            if response.status_code == 200:
-                running_models = response.json()
-                if running_models.get('models'):
-                    return True
-        except:
-            pass
-            
-        return False
-        
-    except Exception as e:
-        logger.error(f"Activity check error: {e}")
-        return True
-
-def should_shutdown():
-    """Check if system should shutdown due to inactivity"""
-    if not AUTO_SHUTDOWN_CONFIG["enabled"]:
-        return False
-        
-    current_time = time.time()
-    last_activity = AUTO_SHUTDOWN_CONFIG["last_activity"]
-    idle_time_minutes = (current_time - last_activity) / 60
-    
-    if idle_time_minutes >= AUTO_SHUTDOWN_CONFIG["idle_threshold_minutes"]:
-        if not check_system_activity():
-            return True
-    
-    return False
-
-# Q&A System Functions - OPTIMIZED
+# Q&A System Functions
 def init_qa_model():
     """Initialize the Q&A model once"""
     global qa_model
@@ -362,8 +204,9 @@ def init_qa_model():
     return qa_model
 
 def create_simple_chunks_with_embeddings(text, model, chunk_size=1800):
-    """Simplified chunking with embeddings - OPTIMIZED"""
+    """Simplified chunking with embeddings"""
     try:
+        # Simple sentence-based chunking
         sentences = text.split('. ')
         
         chunks = []
@@ -372,6 +215,7 @@ def create_simple_chunks_with_embeddings(text, model, chunk_size=1800):
         
         for sentence in sentences:
             if len(current_chunk + sentence) > chunk_size and current_chunk:
+                # Save current chunk
                 start_page = max(1, current_start_pos // 2500 + 1)
                 end_page = max(1, (current_start_pos + len(current_chunk)) // 2500 + 1)
                 
@@ -391,6 +235,7 @@ def create_simple_chunks_with_embeddings(text, model, chunk_size=1800):
             else:
                 current_chunk += sentence + ". "
         
+        # Don't forget last chunk
         if current_chunk.strip():
             start_page = max(1, current_start_pos // 2500 + 1)
             end_page = max(1, (current_start_pos + len(current_chunk)) // 2500 + 1)
@@ -412,80 +257,37 @@ def create_simple_chunks_with_embeddings(text, model, chunk_size=1800):
         logger.error(f"Chunking failed: {str(e)}")
         return []
 
-def smart_chunk_selection(chunks: List[dict], query_embedding: np.ndarray, max_chunks: int = 4) -> List[dict]:
-    """✅ IMPROVED chunk selection with relevance scoring and diversity"""
-    try:
-        similarities = []
-        for chunk in chunks:
-            similarity = np.dot(query_embedding, chunk['embedding']) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(chunk['embedding'])
-            )
-            similarities.append((similarity, chunk))
-        
-        similarities.sort(key=lambda x: x[0], reverse=True)
-        
-        selected_chunks = []
-        for score, chunk in similarities[:max_chunks * 2]:
-            
-            is_diverse = True
-            for selected in selected_chunks:
-                if (chunk.get('document', 'unknown') == selected.get('document', 'unknown') and 
-                    abs(chunk.get('start_page', 0) - selected.get('start_page', 0)) < 3):
-                    is_diverse = False
-                    break
-            
-            if is_diverse and len(selected_chunks) < max_chunks:
-                selected_chunks.append(chunk)
-        
-        while len(selected_chunks) < max_chunks and len(selected_chunks) < len(similarities):
-            for score, chunk in similarities:
-                if chunk not in selected_chunks:
-                    selected_chunks.append(chunk)
-                    break
-        
-        logger.info(f"Selected {len(selected_chunks)} diverse chunks from {len(chunks)} total")
-        return selected_chunks
-        
-    except Exception as e:
-        logger.error(f"Smart chunk selection failed: {str(e)}")
-        return chunks[:max_chunks]
-
 def find_relevant_chunks_simple(question, chunks, model, top_k=4):
-    """Find relevant chunks using IMPROVED semantic similarity"""
+    """Find relevant chunks using semantic similarity"""
     try:
         question_embedding = model.encode([question])[0]
         
-        relevant_chunks = smart_chunk_selection(chunks, question_embedding, top_k)
-        
-        final_chunks = []
-        for chunk in relevant_chunks:
+        similarities = []
+        for chunk in chunks:
             similarity = np.dot(question_embedding, chunk['embedding']) / (
                 np.linalg.norm(question_embedding) * np.linalg.norm(chunk['embedding'])
             )
-            if similarity > 0.1:
-                final_chunks.append(chunk)
+            similarities.append((similarity, chunk))
         
-        logger.info(f"Found {len(final_chunks)} relevant chunks for question")
-        return final_chunks
+        # Sort by similarity and return top chunks
+        similarities.sort(reverse=True, key=lambda x: x[0])
+        
+        # Filter out very low similarity chunks
+        relevant = [chunk for similarity, chunk in similarities[:top_k] if similarity > 0.1]
+        
+        logger.info(f"Found {len(relevant)} relevant chunks for question")
+        return relevant
         
     except Exception as e:
         logger.error(f"Chunk relevance search failed: {str(e)}")
         return []
 
-async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[str] = None) -> dict:
-    """Get real Q&A answer with CACHING and OPTIMIZED parameters"""
+def get_real_qa_answer(question: str, user_id: str, document_id: Optional[str] = None) -> dict:
+    """Get real Q&A answer searching across ALL user documents or specific document"""
     try:
-        # ✅ Check cache first
-        cached_result = await get_cached_answer(question, user_id)
-            
-        if cached_result:
-            cached_result["cached"] = True
-            return cached_result
-        
         logger.info(f"Getting multi-document Q&A answer for user {user_id}")
         
-        update_activity_timestamp()
-        
+        # Find ALL processed documents for this user
         username = user_id
         prefix = f"summaries/{username}/"
         
@@ -496,6 +298,7 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
         
         all_documents = []
         if 'Contents' in response:
+            # Find all chatbot_source.txt files for this user
             for obj in response['Contents']:
                 if obj['Key'].endswith('chatbot_source.txt'):
                     all_documents.append(obj)
@@ -505,19 +308,21 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
             return {
                 "answer": "I couldn't find any processed documents. Please ensure your documents have been fully processed before asking questions.",
                 "sources": "No documents found",
-                "documents_searched": 0,
-                "cached": False
+                "documents_searched": 0
             }
         
         logger.info(f"Found {len(all_documents)} processed documents for user {username}")
         
+        # Initialize Q&A model
         model = init_qa_model()
         
+        # Collect all chunks from all documents
         all_chunks = []
         document_sources = {}
         
         for doc_obj in all_documents:
             try:
+                # Download document text
                 logger.info(f"Loading document from {doc_obj['Key']}")
                 obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=doc_obj['Key'])
                 full_text = obj['Body'].read().decode('utf-8')
@@ -525,10 +330,14 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
                 if not full_text.strip():
                     continue
                 
+                # Extract document name from S3 path
+                # Path format: summaries/username/timestamp_jobid/chatbot_source.txt
                 path_parts = doc_obj['Key'].split('/')
                 doc_identifier = path_parts[2] if len(path_parts) > 2 else "Unknown"
                 
+                # Try to get original filename from metadata or use identifier
                 try:
+                    # Get metadata from the summary directory
                     metadata_key = doc_obj['Key'].replace('chatbot_source.txt', 'metadata.json')
                     metadata_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=metadata_key)
                     metadata = json.loads(metadata_obj['Body'].read().decode('utf-8'))
@@ -536,12 +345,13 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
                 except:
                     doc_name = doc_identifier
                 
+                # Create chunks for this document
                 doc_chunks = create_simple_chunks_with_embeddings(full_text, model)
                 
+                # Add document source info to each chunk
                 for chunk in doc_chunks:
                     chunk['document_name'] = doc_name
                     chunk['document_key'] = doc_obj['Key']
-                    chunk['document'] = doc_name
                 
                 all_chunks.extend(doc_chunks)
                 document_sources[doc_name] = len(doc_chunks)
@@ -556,22 +366,22 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
             return {
                 "answer": "I couldn't process any of your documents. Please check that they were uploaded correctly.",
                 "sources": "Document processing failed",
-                "documents_searched": 0,
-                "cached": False
+                "documents_searched": 0
             }
         
         logger.info(f"Total chunks available for search: {len(all_chunks)} from {len(document_sources)} documents")
         
+        # Find relevant chunks across ALL documents
         relevant_chunks = find_relevant_chunks_simple(question, all_chunks, model, top_k=6)
         
         if not relevant_chunks:
             return {
                 "answer": "I couldn't find relevant information across your documents to answer your question. Please try rephrasing your question or asking about different aspects of your documents.",
                 "sources": "No relevant sections found",
-                "documents_searched": len(document_sources),
-                "cached": False
+                "documents_searched": len(document_sources)
             }
         
+        # Build context and citations with document names
         context_parts = []
         citations = []
         documents_used = set()
@@ -580,6 +390,7 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
             doc_name = chunk.get('document_name', 'Unknown Document')
             context_parts.append(f"[{doc_name} - Section {i+1}]\n{chunk['text']}")
             
+            # Build citation with document name
             if chunk['start_page'] == chunk['end_page']:
                 citation = f"{doc_name} p.{chunk['start_page']}"
             else:
@@ -590,6 +401,7 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
         
         context = "\n\n".join(context_parts)
         
+        # Enhanced prompt for multi-document analysis
         documents_list = ", ".join(documents_used)
         prompt = f"""Based on these sections from multiple documents ({documents_list}), provide a comprehensive and accurate answer:
 
@@ -608,44 +420,43 @@ Answer:"""
 
         logger.info(f"Sending multi-document request to Ollama (using {len(documents_used)} documents)")
         
-        # ✅ Ask Ollama with OPTIMIZED parameters
+        # Ask Ollama
         response = requests.post('http://localhost:11434/api/generate', 
             json={
-                'model': OLLAMA_CONFIG["model"],
+                'model': 'llama3.1:8b',
                 'prompt': prompt,
                 'stream': False,
-                'options': OLLAMA_CONFIG["options"]
+                'options': {
+                    'temperature': 0.05,
+                    'top_p': 0.9,
+                    'num_predict': 800,  # Longer for multi-doc answers
+                    'repeat_penalty': 1.1
+                }
             },
-            timeout=OLLAMA_CONFIG["timeout"])
+            timeout=120)  # Longer timeout for complex multi-doc analysis
         
         if response.status_code == 200:
             answer = response.json()['response'].strip()
             sources = '; '.join(citations)
             
-            qa_result = {
-                "answer": answer,
-                "sources": sources,
-                "documents_searched": len(document_sources),
-                "cached": False
-            }
-            
-            # ✅ Cache the answer for future requests
-            asyncio.create_task(cache_answer(question, user_id, qa_result))
-            
             logger.info(f"Multi-document Q&A answer generated successfully using {len(documents_used)} documents")
             
-            return qa_result
+            return {
+                "answer": answer,
+                "sources": sources,
+                "documents_searched": len(document_sources)
+            }
         else:
             raise Exception(f"Ollama returned status {response.status_code}")
             
     except Exception as e:
         logger.error(f"Multi-document Q&A failed: {str(e)}")
         
+        # Fallback answer
         return {
             "answer": f"I encountered an issue processing your question across your documents. The error was: {str(e)}. Please try asking a more specific question or ensure your documents have been fully processed.",
             "sources": "Multi-document processing error occurred",
-            "documents_searched": 0,
-            "cached": False
+            "documents_searched": 0
         }
 
 # User management functions
@@ -696,8 +507,7 @@ def get_user_by_api_key(api_key: str) -> Optional[dict]:
 
 def get_client_ip(request: Request) -> str:
     """Extract real client IP from request headers"""
-    update_activity_timestamp()
-    
+    # Check proxy headers first
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()
@@ -706,6 +516,7 @@ def get_client_ip(request: Request) -> str:
     if real_ip:
         return real_ip.strip()
     
+    # Fallback to direct connection
     return getattr(request.client, 'host', 'unknown')
 
 def check_ip_rate_limit(client_ip: str):
@@ -715,6 +526,7 @@ def check_ip_rate_limit(client_ip: str):
     with rate_limit_lock:
         ip_data = ip_request_counts[client_ip]
         
+        # Check if IP is currently blocked
         if current_time < ip_data["blocked_until"]:
             remaining = int(ip_data["blocked_until"] - current_time)
             raise HTTPException(
@@ -722,11 +534,13 @@ def check_ip_rate_limit(client_ip: str):
                 detail=f"IP blocked for {remaining} more seconds due to rate limit violations"
             )
         
+        # Clean old requests (older than 1 minute)
         ip_data["requests"] = [
             req_time for req_time in ip_data["requests"] 
             if current_time - req_time < 60
         ]
         
+        # Check burst protection (too many requests in short time)
         recent_burst = [
             req_time for req_time in ip_data["requests"]
             if current_time - req_time < 10
@@ -740,6 +554,7 @@ def check_ip_rate_limit(client_ip: str):
                 detail=f"Too many requests too quickly. IP blocked for {IP_LIMITS['block_duration']} seconds."
             )
         
+        # Check per-minute limit
         if len(ip_data["requests"]) >= IP_LIMITS["requests_per_minute"]:
             ip_data["blocked_until"] = current_time + 60
             raise HTTPException(
@@ -747,6 +562,7 @@ def check_ip_rate_limit(client_ip: str):
                 detail="IP rate limit exceeded. Try again in 60 seconds."
             )
         
+        # Check per-second limit
         very_recent = [
             req_time for req_time in ip_data["requests"]
             if current_time - req_time < 1
@@ -758,15 +574,16 @@ def check_ip_rate_limit(client_ip: str):
                 detail="Too many requests per second. Please slow down."
             )
         
+        # Record this request
         ip_data["requests"].append(current_time)
 
 def check_user_rate_limit(user_info: dict, endpoint_type: str = "general"):
     """Enforce user-tier based rate limiting"""
     user_id = user_info["user_id"]
-        
     tier = user_info["tier"]
     current_time = int(time.time())
     
+    # Clean old requests
     user_data = user_request_counts[user_id]
     user_data["general"] = [t for t in user_data["general"] if current_time - t < 3600]
     user_data["upload"] = [t for t in user_data["upload"] if current_time - t < 3600]
@@ -781,6 +598,7 @@ def check_user_rate_limit(user_info: dict, endpoint_type: str = "general"):
             )
         user_data["upload"].append(current_time)
     else:
+        # Check minute limit
         recent_requests = [t for t in user_data["general"] if current_time - t < 60]
         if len(recent_requests) >= limits["requests_per_minute"]:
             raise HTTPException(
@@ -788,6 +606,7 @@ def check_user_rate_limit(user_info: dict, endpoint_type: str = "general"):
                 detail=f"Rate limit exceeded for {tier} tier: {limits['requests_per_minute']} requests/minute"
             )
         
+        # Check second limit
         very_recent = [t for t in user_data["general"] if current_time - t < 1]
         if len(very_recent) >= limits["requests_per_second"]:
             raise HTTPException(
@@ -810,6 +629,7 @@ def validate_api_key(x_api_key: str = Header(None)) -> dict:
             detail="Missing API key. Include 'X-API-Key' header."
         )
     
+    # Check database users first
     user = get_user_by_api_key(x_api_key)
     if user:
         return {
@@ -820,6 +640,7 @@ def validate_api_key(x_api_key: str = Header(None)) -> dict:
             "full_name": f"{user.get('first_name', '')} {user.get('last_name', '')}"
         }
     
+    # Fallback to demo keys
     if x_api_key in DEMO_API_KEYS:
         demo_user = DEMO_API_KEYS[x_api_key]
         return {
@@ -832,7 +653,7 @@ def validate_api_key(x_api_key: str = Header(None)) -> dict:
     
     raise HTTPException(
         status_code=401,
-detail="Invalid API key. Please login to get a valid key."
+        detail="Invalid API key. Please login to get a valid key."
     )
 
 def log_job_status(job_id: str, status: str, stage: str, user_id: str, extra_data: dict = None):
@@ -849,6 +670,7 @@ def log_job_status(job_id: str, status: str, stage: str, user_id: str, extra_dat
             'updated_at': int(time.time())
         }
         
+        # Convert floats to Decimal for DynamoDB
         if extra_data:
             for key, value in extra_data.items():
                 if isinstance(value, float):
@@ -870,8 +692,9 @@ def count_pdf_pages(file_content: bytes) -> int:
         return len(pdf_reader.pages)
     except Exception as e:
         logger.warning(f"Could not count PDF pages: {e}")
+        # Fallback to file size estimation
         file_size_mb = len(file_content) / (1024 * 1024)
-        return max(1, int(file_size_mb * 10))
+        return max(1, int(file_size_mb * 10))  # Conservative estimate
 
 def validate_pdf_file(file_content: bytes, filename: str):
     """Comprehensive PDF file validation"""
@@ -890,7 +713,7 @@ def validate_pdf_file(file_content: bytes, filename: str):
             detail="Invalid PDF file format"
         )
     
-    if b'%%EOF' not in file_content[-2048:]:
+    if b'%%EOF' not in file_content[-2048:]:  # Check last 2KB
         raise HTTPException(
             status_code=400,
             detail="PDF file appears to be corrupted or incomplete"
@@ -901,17 +724,20 @@ async def process_document_background(job_id: str, s3_key: str, user_id: str, fi
     try:
         log_job_status(job_id, 'processing', 'started', user_id)
         
-        # Simulate processing time based on file size (optimized)
-        processing_time = min(max(file_size_mb * 1.5, 5), 180)  # 1.5s per MB, min 5s, max 3min
+        # TODO: Replace with actual document processing pipeline
+        # For now, simulate processing time based on file size
+        processing_time = min(max(file_size_mb * 2, 5), 120)  # 2 seconds per MB, min 5s, max 2min
         await asyncio.sleep(processing_time)
         
+        # Get actual page count from S3 metadata if available
         try:
             s3_response = s3_client.head_object(Bucket=BUCKET_NAME, Key=s3_key)
             actual_pages = int(s3_response.get('Metadata', {}).get('actual_pages', file_size_mb * 10))
         except:
-            actual_pages = int(file_size_mb * 10)
+            actual_pages = int(file_size_mb * 10)  # Fallback
         
-        estimated_chunks = int(actual_pages * 2)
+        # Simulate processing results based on actual pages
+        estimated_chunks = int(actual_pages * 2)  # 2 chunks per page average
         
         log_job_status(job_id, 'completed', 'finished', user_id, {
             'pages_processed': actual_pages,
@@ -931,7 +757,7 @@ async def process_document_background(job_id: str, s3_key: str, user_id: str, fi
         
     except Exception as e:
         log_job_status(job_id, 'failed', 'error', user_id, {
-            'error_message': str(e)[:500],
+            'error_message': str(e)[:500],  # Limit error message length
             'filename': filename
         })
         logger.error(f"Document processing failed: {job_id} - {e}")
@@ -939,43 +765,107 @@ async def process_document_background(job_id: str, s3_key: str, user_id: str, fi
 # API Routes
 @app.get("/", response_class=HTMLResponse)
 async def welcome_page():
-    """Enhanced welcome page with optimization highlights"""
+    """Enhanced welcome page with multi-document capabilities"""
     return """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Blackletter AI API - OPTIMIZED</title>
+        <title>Blackletter AI API</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.6; }
             .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; text-align: center; margin-bottom: 30px; }
             .status-card { background: #f8f9fa; border-left: 4px solid #28a745; padding: 20px; margin: 20px 0; border-radius: 5px; }
-            .optimization-highlight { background: #e8f5e8; border-left: 4px solid #28a745; padding: 15px; margin: 15px 0; border-radius: 5px; }
-            .perf-badge { background: #28a745; color: white; padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; margin: 0 5px; }
+            .feature-highlight { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; border-radius: 5px; }
+            .endpoint { background: white; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            .method { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-right: 10px; }
+            .post { background: #ffc107; color: #212529; }
+            .get { background: #28a745; color: white; }
+            .delete { background: #dc3545; color: white; }
+            .demo-keys { background: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 8px; margin: 20px 0; }
+            .key-item { font-family: 'Monaco', 'Consolas', monospace; background: #f8f9fa; padding: 8px; margin: 5px 0; border-radius: 4px; }
+            .tier-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+            .tier-free { background: #e3f2fd; color: #1565c0; }
+            .tier-pro { background: #e8f5e8; color: #2e7d32; }
+            .tier-enterprise { background: #fce4ec; color: #c2185b; }
         </style>
     </head>
     <body>
         <div class="header">
-            <h1>🚀 Blackletter AI API - OPTIMIZED</h1>
-            <p>Professional Multi-Document Q&A System with Performance Enhancements</p>
-            <p>Version 6.0.0 | <span class="perf-badge">500MB UPLOADS</span> <span class="perf-badge">REDIS CACHED</span> <span class="perf-badge">OPTIMIZED</span></p>
-        </div>
-
-        <div class="optimization-highlight">
-            <h4>⚡ Performance Optimizations Active</h4>
-            <p><strong>✅ 500MB Upload Limit:</strong> Handle massive legal documents</p>
-            <p><strong>✅ Redis Caching:</strong> Instant responses for repeated questions</p>
-            <p><strong>✅ Optimized Ollama:</strong> Faster Q&A responses</p>
-            <p><strong>✅ Improved Chunk Selection:</strong> More relevant results</p>
-            <p><strong>✅ Smart Auto-Shutdown:</strong> Cost reduction when idle</p>
+            <h1>🚀 Blackletter AI API</h1>
+            <p>Professional Multi-Document Q&A System</p>
+            <p>Version 5.0.0 | MULTI-DOCUMENT UPLOAD & CROSS-DOCUMENT Q&A</p>
         </div>
 
         <div class="status-card">
-            <h3>✅ System Status: OPTIMIZED MULTI-DOCUMENT Q&A OPERATIONAL</h3>
-            <p><strong>Capacity:</strong> Up to 10 files per upload • 500MB per file • Cross-document answers • Fast responses</p>
+            <h3>✅ System Status: MULTI-DOCUMENT Q&A OPERATIONAL</h3>
+            <p><strong>Features:</strong> Multi-Document Upload • Cross-Document Search • Smart Chunking • Semantic Search • Real Document Analysis • User Authentication • Rate Limiting • Enterprise Security</p>
+            <p><strong>Capacity:</strong> Up to 10 files per upload • 1K-100K pages per document • Cross-document answers • Sub-10 second responses • 99.9% uptime</p>
+        </div>
+
+        <div class="feature-highlight">
+            <h4>🆕 NEW: Multi-Document Intelligence</h4>
+            <p><strong>Upload multiple files:</strong> Contracts, amendments, addendums - all at once</p>
+            <p><strong>Ask cross-document questions:</strong> "What are the payment terms across all contracts?"</p>
+            <p><strong>Smart document citations:</strong> Answers cite specific documents and pages</p>
+        </div>
+
+        <div class="demo-keys">
+            <h3>🔑 Demo API Keys (Development)</h3>
+            <div class="key-item">bl_garrett_dev_67890 <span class="tier-badge tier-pro">PRO</span></div>
+            <div class="key-item">bl_jacob_admin_99999 <span class="tier-badge tier-enterprise">ENTERPRISE</span></div>
+            <div class="key-item">bl_demo_key_12345 <span class="tier-badge tier-free">FREE</span></div>
+            <p><em>Include as 'X-API-Key' header in all authenticated requests</em></p>
+        </div>
+
+        <h2>📚 API Endpoints</h2>
+
+        <div class="endpoint">
+            <span class="method post">POST</span><strong>/register</strong>
+            <p>Create new user account with email, password, first_name, last_name</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method post">POST</span><strong>/login</strong>
+            <p>Authenticate user and receive API key</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method get">GET</span><strong>/profile</strong>
+            <p>Get current user profile information</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method post">POST</span><strong>/upload</strong>
+            <p>Upload multiple PDF documents (up to 10 files, 100MB each) for processing</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method get">GET</span><strong>/status/{job_id}</strong>
+            <p>Check document processing status</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method post">POST</span><strong>/ask</strong>
+            <p>Ask questions across ALL your documents - REAL MULTI-DOCUMENT AI ANALYSIS!</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method get">GET</span><strong>/documents</strong>
+            <p>List all user documents with status</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method delete">DELETE</span><strong>/documents/{document_id}</strong>
+            <p>Delete specific document and associated data</p>
+        </div>
+
+        <div class="endpoint">
+            <span class="method get">GET</span><strong>/health</strong>
+            <p>System health check (public endpoint)</p>
         </div>
 
         <p style="text-align: center; margin-top: 40px;">
-            <a href="/docs" style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">📖 API Documentation</a>
+            <a href="/docs" style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">📖 Interactive API Documentation</a>
         </p>
     </body>
     </html>
@@ -985,12 +875,15 @@ async def welcome_page():
 async def register_user(request: RegisterRequest):
     """Register new user account with secure password hashing"""
     try:
+        # Validate email format (Pydantic EmailStr handles basic validation)
         if get_user_by_email(request.email):
             raise HTTPException(status_code=400, detail="Email already registered")
         
+        # Generate secure API key and hash password
         api_key = generate_api_key(request.email)
         password_hash = hash_password(request.password)
         
+        # Create user record
         table = dynamodb.Table(USERS_TABLE)
         user_item = {
             'email': request.email,
@@ -1087,16 +980,19 @@ async def upload_documents(
     background_tasks: BackgroundTasks,
     request: Request,
     user_info: dict = Depends(validate_api_key),
-    file: Optional[UploadFile] = File(None),
-    files: Optional[List[UploadFile]] = File(None)
+    file: Optional[UploadFile] = File(None),  # Single file (backward compatibility)
+    files: Optional[List[UploadFile]] = File(None)  # Multiple files (new feature)
 ):
-    """✅ OPTIMIZED Upload with 500MB limit"""
+    """Upload single or multiple PDF documents for processing (backward compatible)"""
     try:
         apply_rate_limiting(user_info, "upload", get_client_ip(request))
         
+        # Handle both single file and multiple files
         if files and len(files) > 0 and files[0].filename:
+            # Multiple files provided
             upload_files = files
         elif file and file.filename:
+            # Single file provided (backward compatibility)
             upload_files = [file]
         else:
             raise HTTPException(status_code=400, detail="No files provided")
@@ -1107,13 +1003,14 @@ async def upload_documents(
         upload_results = []
         user_id = user_info["user_id"]
         
+        logger.info(f"Upload started: {len(upload_files)} files from {user_id}")
         
-        logger.info(f"OPTIMIZED Upload started: {len(upload_files)} files from {user_id}")
-        
+        # Process each file
         for upload_file in upload_files:
             if not upload_file.filename:
-                continue
+                continue  # Skip files without names
             
+            # Read and validate file
             try:
                 file_content = await upload_file.read()
             except Exception:
@@ -1126,7 +1023,7 @@ async def upload_documents(
             
             file_size_mb = len(file_content) / (1024 * 1024)
             
-            # ✅ INCREASED file size validation to 500MB
+            # Validate file size
             if file_size_mb > MAX_FILE_SIZE_MB:
                 upload_results.append({
                     "filename": upload_file.filename,
@@ -1135,6 +1032,7 @@ async def upload_documents(
                 })
                 continue
             
+            # Validate PDF
             try:
                 validate_pdf_file(file_content, upload_file.filename)
             except HTTPException as e:
@@ -1145,14 +1043,18 @@ async def upload_documents(
                 })
                 continue
             
+            # Count pages
             actual_pages = count_pdf_pages(file_content)
             
+            # Generate job tracking info
             job_id = str(uuid.uuid4())[:8]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
+            # Create safe S3 key
             safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', upload_file.filename)
             s3_key = f"uploads/{user_id}/{timestamp}_{safe_filename}"
             
+            # Upload to S3
             try:
                 s3_client.put_object(
                     Bucket=BUCKET_NAME,
@@ -1177,8 +1079,10 @@ async def upload_documents(
                 })
                 continue
             
+            # Calculate estimates
             estimated_time_minutes = max(1, min(15, actual_pages // 100))
             
+            # Log initial status
             log_job_status(job_id, 'uploaded', 'upload_complete', user_id, {
                 'filename': upload_file.filename,
                 's3_key': s3_key,
@@ -1187,11 +1091,13 @@ async def upload_documents(
                 'tier': user_info["tier"]
             })
             
+            # Start background processing
             background_tasks.add_task(
                 process_document_background,
                 job_id, s3_key, user_id, upload_file.filename, file_size_mb
             )
             
+            # Add to results
             upload_results.append({
                 "job_id": job_id,
                 "filename": upload_file.filename,
@@ -1203,29 +1109,32 @@ async def upload_documents(
                 "s3_key": s3_key
             })
             
-            logger.info(f"OPTIMIZED Document uploaded: {job_id} ({upload_file.filename}) by {user_id}")
+            logger.info(f"Document uploaded: {job_id} ({upload_file.filename}) by {user_id}")
         
+        # Summary response
         successful_uploads = [r for r in upload_results if r.get("status") == "uploaded"]
         failed_uploads = [r for r in upload_results if r.get("status") == "failed"]
         
-        logger.info(f"OPTIMIZED Upload completed: {len(successful_uploads)} successful, {len(failed_uploads)} failed")
+        logger.info(f"Upload completed: {len(successful_uploads)} successful, {len(failed_uploads)} failed")
         
+        # Return format based on whether single or multiple files
         if len(upload_files) == 1 and successful_uploads:
+            # Single file upload - return backward compatible format
             return successful_uploads[0]
         else:
+            # Multiple files - return new format
             return {
                 "message": f"Processed {len(upload_files)} files: {len(successful_uploads)} successful, {len(failed_uploads)} failed",
                 "successful_uploads": successful_uploads,
                 "failed_uploads": failed_uploads,
                 "total_files": len(upload_files),
-                "user_id": user_id,
-                "optimizations_active": True
+                "user_id": user_id
             }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"OPTIMIZED Upload failed for {user_info['user_id']}: {e}")
+        logger.error(f"Upload failed for {user_info['user_id']}: {e}")
         raise HTTPException(status_code=500, detail="Upload failed")
 
 @app.get("/status/{job_id}", response_model=DocumentStatus)
@@ -1234,7 +1143,7 @@ async def get_document_status(
     request: Request,
     user_info: dict = Depends(validate_api_key)
 ):
-    """Get document processing status"""
+    """Get document processing status with user authorization"""
     try:
         apply_rate_limiting(user_info, "general", get_client_ip(request))
         
@@ -1246,6 +1155,7 @@ async def get_document_status(
         
         item = response['Item']
         
+        # Check user authorization (enterprise users can see all documents)
         if item.get('user_id') != user_info["user_id"] and user_info["tier"] != "enterprise":
             raise HTTPException(status_code=403, detail="Access denied to this document")
         
@@ -1274,13 +1184,14 @@ async def ask_question(
     request: Request,
     user_info: dict = Depends(validate_api_key)
 ):
-    """✅ OPTIMIZED Q&A with REDIS CACHING and improved performance"""
+    """Ask questions across ALL your documents with REAL MULTI-DOCUMENT Q&A SYSTEM"""
     try:
-        logger.info(f"OPTIMIZED Q&A request from {user_info['user_id']}: {request_data.question[:50]}...")
+        logger.info(f"MULTI-DOCUMENT Q&A request from {user_info['user_id']}: {request_data.question[:50]}...")
         
         apply_rate_limiting(user_info, "general", get_client_ip(request))
         start_time = time.time()
         
+        # Validate question
         question = request_data.question.strip()
         if not question:
             raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -1288,37 +1199,36 @@ async def ask_question(
         if len(question) > 2000:
             raise HTTPException(status_code=400, detail="Question too long (max 2000 characters)")
         
+        # Get REAL answer using multi-document Q&A system
         try:
-            logger.info("🧠 Getting CACHED/OPTIMIZED multi-document Q&A answer...")
-            qa_result = await get_real_qa_answer(question, user_info["user_id"], request_data.document_id)
-            logger.info("✅ OPTIMIZED multi-document Q&A answer generated successfully")
+            logger.info("🧠 Getting REAL multi-document Q&A answer...")
+            qa_result = get_real_qa_answer(question, user_info["user_id"], request_data.document_id)
+            logger.info("✅ Real multi-document Q&A answer generated successfully")
         except Exception as e:
-            logger.error(f"OPTIMIZED Q&A system error: {e}")
+            logger.error(f"Real multi-document Q&A system error: {e}")
             qa_result = {
                 "answer": f"I encountered an issue processing your question across your documents: {str(e)}. Please try again or contact support.",
                 "sources": "Processing error",
-                "documents_searched": 0,
-                "cached": False
+                "documents_searched": 0
             }
         
         processing_time = time.time() - start_time
         
-        logger.info(f"OPTIMIZED question answered successfully for {user_info['user_id']}")
+        logger.info(f"Multi-document question answered successfully for {user_info['user_id']}")
         
         return QuestionResponse(
             answer=qa_result["answer"],
             sources=qa_result["sources"],
             processing_time=round(processing_time, 2),
             documents_searched=qa_result.get("documents_searched", 0),
-            user_id=user_info["user_id"],
-            cached=qa_result.get("cached", False)
+            user_id=user_info["user_id"]
         )
         
     except HTTPException as he:
-        logger.warning(f"HTTP exception in OPTIMIZED ask_question: {he.status_code} - {he.detail}")
+        logger.warning(f"HTTP exception in ask_question: {he.status_code} - {he.detail}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in OPTIMIZED ask_question: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in ask_question: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Question processing failed: {str(e)[:100]}")
 
 @app.get("/documents", response_model=List[DocumentInfo])
@@ -1332,6 +1242,7 @@ async def list_user_documents(
         
         table = dynamodb.Table(DYNAMODB_TABLE)
         
+        # Scan for user's documents (in production, use GSI for better performance)
         response = table.scan(
             FilterExpression="user_id = :uid AND attribute_exists(filename)",
             ExpressionAttributeValues={":uid": user_info["user_id"]}
@@ -1349,6 +1260,7 @@ async def list_user_documents(
                     status=item.get('status', 'unknown')
                 ))
         
+        # Sort by upload date (newest first)
         documents.sort(key=lambda x: x.upload_date, reverse=True)
         
         return documents
@@ -1369,6 +1281,7 @@ async def delete_document(
     try:
         apply_rate_limiting(user_info, "general", get_client_ip(request))
         
+        # Verify document exists and user has access
         table = dynamodb.Table(DYNAMODB_TABLE)
         response = table.get_item(Key={'job_id': document_id})
         
@@ -1377,9 +1290,11 @@ async def delete_document(
         
         doc_item = response['Item']
         
+        # Check user authorization
         if doc_item.get('user_id') != user_info["user_id"] and user_info["tier"] != "enterprise":
             raise HTTPException(status_code=403, detail="Access denied to this document")
         
+        # Delete from S3 if exists
         if doc_item.get('s3_key'):
             try:
                 s3_client.delete_object(Bucket=BUCKET_NAME, Key=doc_item['s3_key'])
@@ -1387,6 +1302,7 @@ async def delete_document(
             except Exception as e:
                 logger.warning(f"Failed to delete S3 object: {e}")
         
+        # Delete from DynamoDB
         table.delete_item(Key={'job_id': document_id})
         
         logger.info(f"Document deleted: {document_id} by {user_info['user_id']}")
@@ -1405,35 +1321,40 @@ async def delete_document(
 
 @app.get("/health")
 async def health_check():
-    """✅ OPTIMIZED system health check with performance metrics"""
+    """Comprehensive system health check - public endpoint"""
     try:
         start_time = time.time()
         health_data = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "6.0.0 - OPTIMIZED",
-            "qa_system": "CACHED MULTI-DOCUMENT Q&A ACTIVE",
-            "optimizations": f"Redis: {'enabled' if redis_client else 'disabled'}, Auto-shutdown: {'enabled' if AUTO_SHUTDOWN_CONFIG['enabled'] else 'disabled'}",
+            "version": "5.0.0",
+            "qa_system": "MULTI-DOCUMENT Q&A ACTIVE",
+            "uptime_seconds": int(time.time() - start_time),
             "services": {},
             "features": {},
             "performance": {}
         }
         
+        # Test S3 connection
         try:
             s3_client.head_bucket(Bucket=BUCKET_NAME)
             health_data["services"]["s3"] = "operational"
         except Exception as e:
             health_data["services"]["s3"] = f"error: {str(e)[:100]}"
         
+        # Test DynamoDB connections
         try:
             jobs_table = dynamodb.Table(DYNAMODB_TABLE)
             users_table = dynamodb.Table(USERS_TABLE)
             jobs_table.load()
             users_table.load()
-            health_data["services"]["dynamodb"] = "operational"
+            health_data["services"]["dynamodb_jobs"] = "operational"
+            health_data["services"]["dynamodb_users"] = "operational"
         except Exception as e:
-            health_data["services"]["dynamodb"] = f"error: {str(e)[:100]}"
+            health_data["services"]["dynamodb_jobs"] = f"error: {str(e)[:100]}"
+            health_data["services"]["dynamodb_users"] = f"error: {str(e)[:100]}"
         
+        # Test Ollama connection
         try:
             response = requests.get("http://localhost:11434/api/tags", timeout=5)
             if response.status_code == 200:
@@ -1443,38 +1364,31 @@ async def health_check():
         except Exception as e:
             health_data["services"]["ollama"] = f"error: {str(e)[:100]}"
         
-        if redis_client:
-            try:
-                redis_client.ping()
-                health_data["services"]["redis_cache"] = "operational"
-            except Exception as e:
-                health_data["services"]["redis_cache"] = f"error: {str(e)[:100]}"
-        else:
-            health_data["services"]["redis_cache"] = "not configured"
-        
+        # Feature availability
+        all_services_ok = all("operational" in status for status in health_data["services"].values())
         health_data["features"] = {
             "user_registration": "operational",
             "user_authentication": "operational",
             "multi_document_upload": health_data["services"]["s3"],
-            "document_processing": health_data["services"]["dynamodb"],
+            "document_processing": health_data["services"]["dynamodb_jobs"],
             "cross_document_qa": health_data["services"]["ollama"],
-            "redis_caching": health_data["services"]["redis_cache"],
-            "optimized_ollama": "operational"
+            "semantic_search": "operational" if qa_model else "loading"
         }
         
+        # Overall status
+        if not all_services_ok:
+            health_data["status"] = "degraded"
+        
+        # Performance metrics
         response_time = (time.time() - start_time) * 1000
         health_data["performance"] = {
             "response_time_ms": round(response_time, 2),
-            "max_file_size_mb": MAX_FILE_SIZE_MB,
-            "optimizations_active": True
+            "memory_usage": "optimal",
+            "rate_limiting": "active",
+            "max_files_per_upload": MAX_FILES_PER_UPLOAD
         }
         
-        all_critical_ok = all("operational" in str(status) for key, status in health_data["services"].items() 
-                             if key in ["s3", "dynamodb", "ollama"])
-        
-        if not all_critical_ok:
-            health_data["status"] = "degraded"
-        
+        status_code = 200 if health_data["status"] == "healthy" else 503
         return health_data
         
     except Exception as e:
@@ -1485,6 +1399,7 @@ async def health_check():
             "error": str(e)[:200]
         }
 
+# Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Enhanced error handling with logging and CORS headers"""
@@ -1517,6 +1432,7 @@ async def general_exception_handler(request: Request, exc: Exception):
             "error": "Internal server error",
             "status_code": 500,
             "timestamp": datetime.now().isoformat(),
+            "details": str(exc) if logger.level <= logging.DEBUG else "Contact support"
         },
         headers={
             "Access-Control-Allow-Origin": "*",
@@ -1538,121 +1454,17 @@ async def options_handler(request: Request, path: str):
         }
     )
 
-
-
-
-    import uvicorn
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        log_level="info",
-        access_log=True
-    )
-
-@app.get("/projects")
-async def list_projects(user_info: dict = Depends(validate_api_key)):
-    """List all projects for the authenticated user"""
-    try:
-        user_id = user_info["user_id"]
-        
-        
-        response = projects_table.scan(
-            FilterExpression="user_id = :user_id",
-            ExpressionAttributeValues={":user_id": user_id}
-        )
-        
-        projects = []
-        for item in response.get('Items', []):
-            projects.append({
-                "id": item['project_id'],
-                "name": item['project_name'],
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            })
-        
-        return {
-            "success": True,
-            "projects": projects,
-            "total_projects": len(projects)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/projects")
-async def create_project(project_data: dict, user_info: dict = Depends(validate_api_key)):
-    logger.info(f"GARRETT DEBUG: {project_data}")
-    """Create a new project"""
-    try:
-        user_id = user_info["user_id"]
-        
-        project_name = project_data.get("name", "").strip()
-        
-        
-        if not project_name:
-            raise HTTPException(status_code=400, detail="Project name is required")
-        
-        project_id = f"proj_{user_id}_{int(time.time())}"
-        
-        projects_table.put_item(
-            Item={
-                'project_id': project_id,
-                'user_id': user_id,
-                'project_name': project_name,
-                'created_at': datetime.utcnow().isoformat()
-            }
-        )
-        
-        return {
-            "success": True,
-            "project": {
-                "id": project_id,
-                "name": project_name,
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating project: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/user/{user_id}/projects")
-async def list_user_projects(user_id: str, user_info: dict = Depends(validate_api_key)):
-    """List projects for a specific user - compatibility endpoint"""
-    try:
-        # For security, only allow users to access their own projects
-        if user_info["user_id"] != user_id and user_info["tier"] != "enterprise":
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        response = projects_table.scan(
-            FilterExpression="user_id = :user_id",
-            ExpressionAttributeValues={":user_id": user_id}
-        )
-        
-        projects = []
-        for item in response.get("Items", []):
-            projects.append({
-                "id": item["project_id"],
-                "name": item["project_name"],
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            })
-        
-        return {
-            "success": True,
-            "projects": projects,
-            "total_projects": len(projects)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing user projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application on startup"""
+    logger.info("🚀 Blackletter AI API starting up...")
+    logger.info(f"✅ AWS S3 Bucket: {BUCKET_NAME}")
+    logger.info(f"✅ DynamoDB Tables: {DYNAMODB_TABLE}, {USERS_TABLE}")
+    logger.info("✅ Authentication system ready")
+    logger.info("✅ Rate limiting active")
+    logger.info("🧠 REAL Multi-Document Q&A System initialized")
+    logger.info(f"📁 Multi-upload: up to {MAX_FILES_PER_UPLOAD} files per request")
+    logger.info("🎯 API ready for production use with MULTI-DOCUMENT ANALYSIS")
 
 if __name__ == "__main__":
     import uvicorn
@@ -1663,6 +1475,3 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True
     )
-
-
-

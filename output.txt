@@ -1,0 +1,86 @@
+Blackletter Summary for: BL PDF Test.pdf
+==================================================
+
+Chunk 1:
+Here is a clear and professional summary of the legal document section:
+
+**Agreement Summary**
+
+**Contract Number:** BL-2024-001
+**Effective Date:** January 15, 2024
+
+**Parties:**
+1. **TechCorp Industries, LLC ("Client")**: Requires custom software development services for their legal document management platform.
+2. **Digital Solutions Inc. ("Developer")**: Agrees to provide the necessary technical expertise and resources.
+
+**Key Obligations:**
+
+* The Developer will design, develop, and implement a web-based legal document management system with specific specifications, including:
+	+ User authentication and authorization
+	+ Document creation and editing capabilities
+	+ Search and retrieval functionality
+	+ Data storage and security measures
+
+Note that this summary focuses on the key facts, dates, parties, and obligations as outlined in the provided section of the agreement.
+
+Chunk 2:
+Here is a clear and professional summary of the legal document section:
+
+**Service Period**
+
+* The service period will commence on February 1, 2024.
+* It will last for 18 months, concluding on July 31, 2025.
+* Unless terminated earlier in accordance with this agreement.
+
+**Compensation**
+
+* The Client agrees to pay the Developer a total sum of $120,000.
+* Payment schedule:
+	+ Initial payment: $30,000 upon contract execution (February 1, 2024).
+	+ Monthly payments: $5,000 per month for 17 months (from February 2024 to June 2025).
+
+**Key Parties and Obligations**
+
+* Client: Obligated to pay the Developer a total sum of $120,000 according to the payment schedule.
+* Developer: No specific obligations mentioned in this section.
+
+Note: This summary only includes the information provided in the specified section. Please refer to the full document for complete details and other relevant information.
+
+Chunk 3:
+Here is a clear and professional summary of the specified section:
+
+**Section Summary: Payment, Intellectual Property, Confidentiality, and Termination**
+
+* **Payment Obligation**: The client will make a final payment of $30,000 upon project completion and acceptance.
+* **Intellectual Property Ownership**: Upon full payment of all fees, all software code, documentation, and related materials developed under the agreement will become the exclusive property of the client.
+* **Confidentiality Agreement**: Both parties acknowledge access to confidential information and agree to maintain strict confidentiality for a period of 5 years following contract termination.
+* **Termination Notice**: Either party may terminate the agreement with 60 days written notice.
+
+**Key Facts:**
+
+* Payment due date: Upon project completion and acceptance
+* Intellectual property transfer: Upon full payment of all fees
+* Confidentiality period: 5 years following contract termination
+
+**Parties Involved:**
+ Client and Contractor/Developer (not specified by name in the provided section)
+
+Please note that this summary focuses on the key facts, dates, parties, and obligations outlined in the specified section.
+
+Chunk 4:
+Here is a clear and professional summary of the section:
+
+**Section 7: Liability Limitation**
+
+* Key Facts:
+	+ The total liability of the Developer (Digital Solutions Inc.) under this Agreement shall not exceed $120,000.
+* Dates:
+	+ January 15, 2024 (the date on which the parties executed the Agreement)
+* Parties Involved:
+	+ TechCorp Industries, LLC (Client)
+	+ Digital Solutions Inc. (Developer)
+* Obligations:
+	+ The Developer's liability is capped at $120,000 for all services performed up to the termination date.
+
+Note: This summary focuses on the key facts, dates, parties involved, and obligations outlined in this section of the Agreement.
+
