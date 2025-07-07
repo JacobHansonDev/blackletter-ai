@@ -1654,6 +1654,46 @@ async def list_user_projects(user_id: str, user_info: dict = Depends(validate_ap
         logger.error(f"Error listing user projects: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user_info: dict = Depends(validate_api_key)):
+    """Delete a project"""
+    try:
+        user_id = user_info["user_id"]
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        projects_table.delete_item(Key={"project_id": project_id})
+        return {"success": True, "message": "Project deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects/{project_id}/files")
+async def add_files_to_project(project_id: str, file_data: dict, user_info: dict = Depends(validate_api_key)):
+    """Add files to a project"""
+    try:
+        user_id = user_info["user_id"]
+        document_ids = file_data.get("document_ids", [])
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        updated_count = 0
+        for doc_id in document_ids:
+            try:
+                jobs_table.update_item(
+                    Key={"job_id": doc_id},
+                    UpdateExpression="SET project_id = :project_id",
+                    ConditionExpression="user_id = :user_id",
+                    ExpressionAttributeValues={":project_id": project_id, ":user_id": user_id}
+                )
+                updated_count += 1
+            except Exception:
+                pass
+        return {"success": True, "updated_documents": updated_count}
+    except Exception as e:
+        logger.error(f"Error adding files to project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -1663,6 +1703,10 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True
     )
+
+
+
+
 
 
 
