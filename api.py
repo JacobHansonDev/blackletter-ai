@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Blackletter AI API - OPTIMIZED Production Version 6.0
 ✅ User registration & login system
@@ -18,6 +17,7 @@ Blackletter AI API - OPTIMIZED Production Version 6.0
 ✅ UPLOAD ANALYSIS with file composition feedback
 ✅ SMART AUTO-SHUTDOWN monitoring
 ✅ Production deployment ready
+✅ PROJECT MANAGEMENT with file assignment - FIXED
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends, Header, Request
@@ -52,21 +52,18 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
-    logger.warning("Redis not available - caching disabled")
 
 try:
     import fitz  # PyMuPDF for smart content extraction
     SMART_EXTRACTION_AVAILABLE = True
 except ImportError:
     SMART_EXTRACTION_AVAILABLE = False
-    logger.warning("PyMuPDF not available - smart extraction disabled")
 
 try:
     import psutil
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
-    logger.warning("psutil not available - auto-shutdown disabled")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -153,15 +150,15 @@ AUTO_SHUTDOWN_CONFIG = {
 OLLAMA_CONFIG = {
     "model": "llama3.1:8b",
     "options": {
-        "num_ctx": 4096,
-        "num_predict": 512,
+        "num_ctx": 3072,
+        "num_predict": 384,
         "temperature": 0.1,
         "top_p": 0.9,
         "repeat_penalty": 1.1,
         "num_thread": 8,
         "num_gpu": 0
     },
-    "timeout": 60
+    "timeout": 600
 }
 
 # Pydantic models
@@ -193,6 +190,7 @@ class UserProfile(BaseModel):
 class QuestionRequest(BaseModel):
     question: str
     document_id: Optional[str] = None
+    project_id: Optional[str] = None
 
 class QuestionResponse(BaseModel):
     answer: str
@@ -472,7 +470,7 @@ def find_relevant_chunks_simple(question, chunks, model, top_k=4):
         logger.error(f"Chunk relevance search failed: {str(e)}")
         return []
 
-async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[str] = None) -> dict:
+async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[str] = None, project_id: Optional[str] = None) -> dict:
     """Get real Q&A answer with CACHING and OPTIMIZED parameters"""
     try:
         # ✅ Check cache first
@@ -487,18 +485,49 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
         update_activity_timestamp()
         
         username = user_id
-        prefix = f"summaries/{username}/"
-        
-        response = s3_client.list_objects_v2(
-            Bucket=BUCKET_NAME,
-            Prefix=prefix
-        )
-        
-        all_documents = []
-        if 'Contents' in response:
-            for obj in response['Contents']:
-                if obj['Key'].endswith('chatbot_source.txt'):
-                    all_documents.append(obj)
+
+        # ✅ NEW: Filter documents by project if project_id is provided
+        if project_id:
+            logger.info(f"Filtering documents for project: {project_id}")
+            # Get documents assigned to this project
+            project_docs_response = jobs_table.scan(
+                FilterExpression="project_id = :project_id AND user_id = :user_id",
+                ExpressionAttributeValues={
+                    ":project_id": project_id,
+                    ":user_id": user_id
+                }
+            )
+            
+            # Get S3 keys for project documents
+            project_s3_keys = []
+            for item in project_docs_response.get("Items", []):
+                if item.get("s3_key"):
+                    # Convert upload path to summary path
+                    s3_key = item["s3_key"]
+                    summary_key = s3_key.replace("uploads/", "summaries/").replace(".pdf", "_chatbot_source.txt")
+                    project_s3_keys.append(summary_key)
+            
+            # Get only the project documents from S3
+            all_documents = []
+            for key in project_s3_keys:
+                try:
+                    s3_client.head_object(Bucket=BUCKET_NAME, Key=key)
+                    all_documents.append({"Key": key})
+                except:
+                    continue
+        else:
+            # Original behavior - get all user documents
+            prefix = f"summaries/{username}/"
+            response = s3_client.list_objects_v2(
+                Bucket=BUCKET_NAME,
+                Prefix=prefix
+            )
+            
+            all_documents = []
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    if obj['Key'].endswith('chatbot_source.txt'):
+                        all_documents.append(obj)
         
         if not all_documents:
             logger.warning(f"No processed documents found for user {username}")
@@ -562,7 +591,7 @@ async def get_real_qa_answer(question: str, user_id: str, document_id: Optional[
         
         logger.info(f"Total chunks available for search: {len(all_chunks)} from {len(document_sources)} documents")
         
-        relevant_chunks = find_relevant_chunks_simple(question, all_chunks, model, top_k=6)
+        relevant_chunks = find_relevant_chunks_simple(question, all_chunks, model, top_k=5)
         
         if not relevant_chunks:
             return {
@@ -832,7 +861,7 @@ def validate_api_key(x_api_key: str = Header(None)) -> dict:
     
     raise HTTPException(
         status_code=401,
-detail="Invalid API key. Please login to get a valid key."
+        detail="Invalid API key. Please login to get a valid key."
     )
 
 def log_job_status(job_id: str, status: str, stage: str, user_id: str, extra_data: dict = None):
@@ -959,7 +988,6 @@ async def welcome_page():
             <p>Professional Multi-Document Q&A System with Performance Enhancements</p>
             <p>Version 6.0.0 | <span class="perf-badge">500MB UPLOADS</span> <span class="perf-badge">REDIS CACHED</span> <span class="perf-badge">OPTIMIZED</span></p>
         </div>
-
         <div class="optimization-highlight">
             <h4>⚡ Performance Optimizations Active</h4>
             <p><strong>✅ 500MB Upload Limit:</strong> Handle massive legal documents</p>
@@ -967,13 +995,12 @@ async def welcome_page():
             <p><strong>✅ Optimized Ollama:</strong> Faster Q&A responses</p>
             <p><strong>✅ Improved Chunk Selection:</strong> More relevant results</p>
             <p><strong>✅ Smart Auto-Shutdown:</strong> Cost reduction when idle</p>
+            <p><strong>✅ Project Management:</strong> Organize documents into cases</p>
         </div>
-
         <div class="status-card">
             <h3>✅ System Status: OPTIMIZED MULTI-DOCUMENT Q&A OPERATIONAL</h3>
             <p><strong>Capacity:</strong> Up to 10 files per upload • 500MB per file • Cross-document answers • Fast responses</p>
         </div>
-
         <p style="text-align: center; margin-top: 40px;">
             <a href="/docs" style="background: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">📖 API Documentation</a>
         </p>
@@ -1106,7 +1133,6 @@ async def upload_documents(
         
         upload_results = []
         user_id = user_info["user_id"]
-        
         
         logger.info(f"OPTIMIZED Upload started: {len(upload_files)} files from {user_id}")
         
@@ -1290,7 +1316,7 @@ async def ask_question(
         
         try:
             logger.info("🧠 Getting CACHED/OPTIMIZED multi-document Q&A answer...")
-            qa_result = await get_real_qa_answer(question, user_info["user_id"], request_data.document_id)
+            qa_result = await get_real_qa_answer(question, user_info["user_id"], request_data.document_id, request_data.project_id)
             logger.info("✅ OPTIMIZED multi-document Q&A answer generated successfully")
         except Exception as e:
             logger.error(f"OPTIMIZED Q&A system error: {e}")
@@ -1403,6 +1429,338 @@ async def delete_document(
         logger.error(f"Document deletion failed: {document_id} - {e}")
         raise HTTPException(status_code=500, detail="Failed to delete document")
 
+# ✅ FIXED PROJECT MANAGEMENT ENDPOINTS
+
+@app.get("/projects")
+async def list_projects(user_info: dict = Depends(validate_api_key)):
+    """List all projects for the authenticated user"""
+    try:
+        user_id = user_info["user_id"]
+        
+        response = projects_table.scan(
+            FilterExpression="user_id = :user_id",
+            ExpressionAttributeValues={":user_id": user_id}
+        )
+        
+        projects = []
+        for item in response.get('Items', []):
+            # Get file count for each project
+            files_response = jobs_table.scan(
+                FilterExpression="project_id = :project_id AND user_id = :user_id",
+                ExpressionAttributeValues={
+                    ":project_id": item['project_id'],
+                    ":user_id": user_id
+                }
+            )
+            file_count = len([f for f in files_response.get('Items', []) if f.get('filename')])
+            
+            projects.append({
+                "id": item['project_id'],
+                "name": item['project_name'],
+                "document_count": file_count,
+                "is_expanded": True,
+                "documents": []
+            })
+        
+        return {
+            "success": True,
+            "projects": projects,
+            "total_projects": len(projects)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing projects: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects")
+async def create_project(project_data: dict, user_info: dict = Depends(validate_api_key)):
+    """Create a new project"""
+    try:
+        user_id = user_info["user_id"]
+        project_name = project_data.get("name", "").strip()
+        project_description = project_data.get("description", "").strip()
+        
+        if not project_name:
+            raise HTTPException(status_code=400, detail="Project name is required")
+        
+        project_id = f"proj_{user_id}_{int(time.time())}"
+        
+        project_item = {
+            'project_id': project_id,
+            'user_id': user_id,
+            'project_name': project_name,
+            'created_at': datetime.utcnow().isoformat()
+        }
+        
+        if project_description:
+            project_item['description'] = project_description
+        
+        projects_table.put_item(Item=project_item)
+        
+        return {
+            "success": True,
+            "project": {
+                "id": project_id,
+                "name": project_name,
+                "description": project_description,
+                "document_count": 0,
+                "is_expanded": True,
+                "documents": [],
+                "files": []
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/projects/{project_id}")
+async def get_project_details(project_id: str, user_info: dict = Depends(validate_api_key)):
+    """Get project details including assigned files"""
+    try:
+        user_id = user_info["user_id"]
+        
+        # Get project info
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        project = response["Item"]
+        
+        # Get files assigned to this project
+        files_response = jobs_table.scan(
+            FilterExpression="project_id = :project_id AND user_id = :user_id",
+            ExpressionAttributeValues={
+                ":project_id": project_id,
+                ":user_id": user_id
+            }
+        )
+        
+        files = []
+        for item in files_response.get("Items", []):
+            if item.get("filename"):
+                files.append({
+                    "id": item["job_id"],
+                    "name": item["filename"],
+                    "status": item.get("status", "unknown"),
+                    "uploadDate": item.get("timestamp", ""),
+                    "size": float(item.get("file_size_mb", 0)) * 1024 * 1024 if item.get("file_size_mb") else None
+                })
+        
+        return {
+            "success": True,
+            "project": {
+                "id": project["project_id"],
+                "name": project["project_name"],
+                "description": project.get("description", ""),
+                "files": files,
+                "createdAt": project.get("created_at", "")
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting project details: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user/{user_id}/available-files")
+async def get_available_files(user_id: str, user_info: dict = Depends(validate_api_key)):
+    """Get files available to add to projects"""
+    try:
+        if user_info["user_id"] != user_id and user_info["tier"] != "enterprise":
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get all user files
+        response = jobs_table.scan(
+            FilterExpression="user_id = :user_id AND attribute_exists(filename)",
+            ExpressionAttributeValues={":user_id": user_id}
+        )
+        
+        files = []
+        for item in response.get("Items", []):
+            if item.get("filename") and item.get("status"):
+                files.append({
+                    "id": item["job_id"],
+                    "name": item["filename"],
+                    "status": item["status"]
+                })
+        
+        return {
+            "success": True,
+            "files": files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting available files: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user/{user_id}/projects")
+async def list_user_projects(user_id: str, user_info: dict = Depends(validate_api_key)):
+    """List projects for a specific user - compatibility endpoint"""
+    try:
+        # For security, only allow users to access their own projects
+        if user_info["user_id"] != user_id and user_info["tier"] != "enterprise":
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        response = projects_table.scan(
+            FilterExpression="user_id = :user_id",
+            ExpressionAttributeValues={":user_id": user_id}
+        )
+        
+        projects = []
+        for item in response.get("Items", []):
+            # Get file count for each project
+            files_response = jobs_table.scan(
+                FilterExpression="project_id = :project_id AND user_id = :user_id",
+                ExpressionAttributeValues={
+                    ":project_id": item["project_id"],
+                    ":user_id": user_id
+                }
+            )
+            file_count = len([f for f in files_response.get('Items', []) if f.get('filename')])
+            
+            projects.append({
+                "id": item["project_id"],
+                "name": item["project_name"],
+                "document_count": file_count,
+                "is_expanded": True,
+                "documents": []
+            })
+        
+        return {
+            "success": True,
+            "projects": projects,
+            "total_projects": len(projects)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing user projects: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/projects/{project_id}/files")
+async def add_files_to_project(project_id: str, file_data: dict, user_info: dict = Depends(validate_api_key)):
+    """Add files to a project and return updated project data"""
+    try:
+        user_id = user_info["user_id"]
+        document_ids = file_data.get("document_ids", [])
+        
+        # Verify project exists and user owns it
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        updated_count = 0
+        for doc_id in document_ids:
+            try:
+                jobs_table.update_item(
+                    Key={"job_id": doc_id},
+                    UpdateExpression="SET project_id = :project_id",
+                    ConditionExpression="user_id = :user_id",
+                    ExpressionAttributeValues={":project_id": project_id, ":user_id": user_id}
+                )
+                updated_count += 1
+            except Exception:
+                pass
+        
+        # ✅ CRITICAL: Return updated project data
+        # Get updated project with files
+        project = response["Item"]
+        files_response = jobs_table.scan(
+            FilterExpression="project_id = :project_id AND user_id = :user_id",
+            ExpressionAttributeValues={
+                ":project_id": project_id,
+                ":user_id": user_id
+            }
+        )
+        
+        files = []
+        for item in files_response.get("Items", []):
+            if item.get("filename"):
+                files.append({
+                    "id": item["job_id"],
+                    "name": item["filename"],
+                    "status": item.get("status", "unknown"),
+                    "uploadDate": item.get("timestamp", ""),
+                    "size": float(item.get("file_size_mb", 0)) * 1024 * 1024 if item.get("file_size_mb") else None
+                })
+        
+        return {
+            "success": True,
+            "updated_documents": updated_count,
+            "project": {
+                "id": project["project_id"],
+                "name": project["project_name"],
+                "description": project.get("description", ""),
+                "files": files,
+                "createdAt": project.get("created_at", "")
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error adding files to project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/projects/{project_id}/files/{file_id}")
+async def remove_file_from_project(project_id: str, file_id: str, user_info: dict = Depends(validate_api_key)):
+    """Remove a file from a project"""
+    try:
+        user_id = user_info["user_id"]
+        
+        # Verify project exists and user owns it
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Remove project_id from the document
+        jobs_table.update_item(
+            Key={"job_id": file_id},
+            UpdateExpression="REMOVE project_id",
+            ConditionExpression="user_id = :user_id",
+            ExpressionAttributeValues={":user_id": user_id}
+        )
+        
+        return {"success": True, "message": "File removed from project"}
+        
+    except Exception as e:
+        logger.error(f"Error removing file from project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user_info: dict = Depends(validate_api_key)):
+    """Delete a project"""
+    try:
+        user_id = user_info["user_id"]
+        response = projects_table.get_item(Key={"project_id": project_id})
+        if "Item" not in response or response["Item"]["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Optional: Remove project_id from all associated documents
+        try:
+            files_response = jobs_table.scan(
+                FilterExpression="project_id = :project_id AND user_id = :user_id",
+                ExpressionAttributeValues={
+                    ":project_id": project_id,
+                    ":user_id": user_id
+                }
+            )
+            
+            for item in files_response.get("Items", []):
+                try:
+                    jobs_table.update_item(
+                        Key={"job_id": item["job_id"]},
+                        UpdateExpression="REMOVE project_id"
+                    )
+                except:
+                    pass
+        except:
+            pass
+        
+        projects_table.delete_item(Key={"project_id": project_id})
+        return {"success": True, "message": "Project deleted successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check():
     """✅ OPTIMIZED system health check with performance metrics"""
@@ -1459,7 +1817,8 @@ async def health_check():
             "document_processing": health_data["services"]["dynamodb"],
             "cross_document_qa": health_data["services"]["ollama"],
             "redis_caching": health_data["services"]["redis_cache"],
-            "optimized_ollama": "operational"
+            "optimized_ollama": "operational",
+            "project_management": "operational"
         }
         
         response_time = (time.time() - start_time) * 1000
@@ -1538,162 +1897,6 @@ async def options_handler(request: Request, path: str):
         }
     )
 
-
-
-
-    import uvicorn
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        log_level="info",
-        access_log=True
-    )
-
-@app.get("/projects")
-async def list_projects(user_info: dict = Depends(validate_api_key)):
-    """List all projects for the authenticated user"""
-    try:
-        user_id = user_info["user_id"]
-        
-        
-        response = projects_table.scan(
-            FilterExpression="user_id = :user_id",
-            ExpressionAttributeValues={":user_id": user_id}
-        )
-        
-        projects = []
-        for item in response.get('Items', []):
-            projects.append({
-                "id": item['project_id'],
-                "name": item['project_name'],
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            })
-        
-        return {
-            "success": True,
-            "projects": projects,
-            "total_projects": len(projects)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/projects")
-async def create_project(project_data: dict, user_info: dict = Depends(validate_api_key)):
-    logger.info(f"GARRETT DEBUG: {project_data}")
-    """Create a new project"""
-    try:
-        user_id = user_info["user_id"]
-        
-        project_name = project_data.get("name", "").strip()
-        
-        
-        if not project_name:
-            raise HTTPException(status_code=400, detail="Project name is required")
-        
-        project_id = f"proj_{user_id}_{int(time.time())}"
-        
-        projects_table.put_item(
-            Item={
-                'project_id': project_id,
-                'user_id': user_id,
-                'project_name': project_name,
-                'created_at': datetime.utcnow().isoformat()
-            }
-        )
-        
-        return {
-            "success": True,
-            "project": {
-                "id": project_id,
-                "name": project_name,
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating project: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/user/{user_id}/projects")
-async def list_user_projects(user_id: str, user_info: dict = Depends(validate_api_key)):
-    """List projects for a specific user - compatibility endpoint"""
-    try:
-        # For security, only allow users to access their own projects
-        if user_info["user_id"] != user_id and user_info["tier"] != "enterprise":
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        response = projects_table.scan(
-            FilterExpression="user_id = :user_id",
-            ExpressionAttributeValues={":user_id": user_id}
-        )
-        
-        projects = []
-        for item in response.get("Items", []):
-            projects.append({
-                "id": item["project_id"],
-                "name": item["project_name"],
-                "document_count": 0,
-                "is_expanded": True,
-                "documents": []
-            })
-        
-        return {
-            "success": True,
-            "projects": projects,
-            "total_projects": len(projects)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing user projects: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/projects/{project_id}")
-async def delete_project(project_id: str, user_info: dict = Depends(validate_api_key)):
-    """Delete a project"""
-    try:
-        user_id = user_info["user_id"]
-        response = projects_table.get_item(Key={"project_id": project_id})
-        if "Item" not in response or response["Item"]["user_id"] != user_id:
-            raise HTTPException(status_code=404, detail="Project not found")
-        projects_table.delete_item(Key={"project_id": project_id})
-        return {"success": True, "message": "Project deleted successfully"}
-    except Exception as e:
-        logger.error(f"Error deleting project: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/projects/{project_id}/files")
-async def add_files_to_project(project_id: str, file_data: dict, user_info: dict = Depends(validate_api_key)):
-    """Add files to a project"""
-    try:
-        user_id = user_info["user_id"]
-        document_ids = file_data.get("document_ids", [])
-        response = projects_table.get_item(Key={"project_id": project_id})
-        if "Item" not in response or response["Item"]["user_id"] != user_id:
-            raise HTTPException(status_code=404, detail="Project not found")
-        updated_count = 0
-        for doc_id in document_ids:
-            try:
-                jobs_table.update_item(
-                    Key={"job_id": doc_id},
-                    UpdateExpression="SET project_id = :project_id",
-                    ConditionExpression="user_id = :user_id",
-                    ExpressionAttributeValues={":project_id": project_id, ":user_id": user_id}
-                )
-                updated_count += 1
-            except Exception:
-                pass
-        return {"success": True, "updated_documents": updated_count}
-    except Exception as e:
-        logger.error(f"Error adding files to project: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -1703,8 +1906,6 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True
     )
-
-
 
 
 
